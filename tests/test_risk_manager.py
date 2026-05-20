@@ -103,8 +103,11 @@ class TestRiskManager:
         qty = rm.calculate_position_size(50000.0, Side.LONG)
         assert qty > 0
         risk = 10_000 * 0.02
-        expected = (risk / (50000.0 * 0.015)) * 5
+        expected = risk / (50000.0 * 0.015)
         assert abs(qty - round(expected, 6)) < 1e-6
+        # Verify: SL hit should lose exactly risk_amount ($200)
+        loss_at_sl = qty * 50000.0 * 0.015
+        assert abs(loss_at_sl - risk) < 0.01
 
     def test_stop_loss_long(self) -> None:
         rm = RiskManager(_make_settings(stop_loss_pct=0.015), 10_000.0)

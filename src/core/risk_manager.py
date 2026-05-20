@@ -47,15 +47,13 @@ class RiskManager:
 
     def calculate_position_size(self, entry_price: float, side: Side) -> float:
         risk_amount = self.state.current_balance * self._settings.max_position_pct
-        if side == Side.LONG:
-            stop_distance = entry_price * self._settings.stop_loss_pct
-        else:
-            stop_distance = entry_price * self._settings.stop_loss_pct
+        stop_distance = entry_price * self._settings.stop_loss_pct
 
         if stop_distance <= 0:
             return 0.0
 
-        raw_qty = (risk_amount / stop_distance) * self._settings.leverage
+        # qty sized so that SL hit = risk_amount loss (leverage only affects margin)
+        raw_qty = risk_amount / stop_distance
         return round(raw_qty, 6)
 
     def compute_stop_loss(self, entry_price: float, side: Side) -> float:
