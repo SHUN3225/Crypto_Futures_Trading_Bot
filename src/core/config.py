@@ -33,8 +33,18 @@ class Settings(BaseSettings):
     # --- Trading ---
     mode: TradingMode = TradingMode.PAPER
     symbol: str = "BTC/USDT:USDT"
+    symbols: str = Field(
+        default="",
+        description="Comma-separated list of symbols to trade (overrides symbol if set)",
+    )
     timeframe: str = "15m"
     leverage: int = Field(default=5, ge=1, le=50)
+
+    def get_symbols(self) -> list[str]:
+        """Return list of symbols to trade."""
+        if self.symbols.strip():
+            return [s.strip() for s in self.symbols.split(",") if s.strip()]
+        return [self.symbol]
 
     # --- Risk Management ---
     max_position_pct: float = Field(
