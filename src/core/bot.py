@@ -39,6 +39,7 @@ class TradingBot:
         self._strategy = _build_strategy(settings)
         self._risk: RiskManager | None = None
         self._positions: list[Position] = []
+        self._symbols = settings.get_symbols()
         self._running = False
         self._last_daily_reset: str = ""
         self._notifier = DiscordNotifier(settings.discord_webhook)
@@ -55,16 +56,17 @@ class TradingBot:
 
     def start(self) -> None:
         logger.info(
-            "Starting {} bot | Strategy: {} | Symbol: {} | Leverage: {}x | Mode: {}",
+            "Starting {} bot | Strategy: {} | Symbols: {} | Leverage: {}x | Mode: {}",
             self._settings.exchange_id.value,
             self._strategy.name,
-            self._settings.symbol,
+            ", ".join(self._symbols),
             self._settings.leverage,
             self._settings.mode.value,
         )
         self._init_risk_manager()
         if self._settings.mode != TradingMode.PAPER:
-            self._exchange.set_leverage()
+            for sym in self._symbols:
+                self._exchange.set_leverage(symbol=sym)
         self._running = True
 
         logger.info(
@@ -78,7 +80,7 @@ class TradingBot:
 
         if self._risk:
             self._notifier.bot_started(
-                self._settings.symbol,
+                ", ".join(self._symbols),
                 self._settings.mode.value,
                 self._risk.state.current_balance,
             )
@@ -111,56 +113,64 @@ class TradingBot:
         self._running = False
 
     def _tick(self) -> None:
-        try:
-            self._maybe_daily_reset()
-            assert self._risk is not None
-            if self._risk.state.is_halted:
-                logger.warning("Trading halted: {}", self._risk.state.halt_reason)
-                return
-
-            df = self._exchange.fetch_ohlcv()
-            current_price = float(df["close"].iloc[-1])
-            logger.info(
-                "[TICK] {} price=${:,.2f} | positions={}",
-                self._settings.symbol, current_price, len(self._positions),
-            )
-
-            self._manage_open_positions(current_price)
-
-            signal = self._strategy.analyze(df)
-            logger.info(
-                "Signal: {} score={:.3f}{}",
-                signal.action.value,
-                signal.score,
-                f" ATR={signal.atr_value:.2f}" if signal.atr_value else "",
-            )
-
-            if signal.action == SignalAction.HOLD:
-                return
-            if signal.score < self._settings.min_signal_score:
-                return
-
-            self._notifier.signal_alert(
-                self._settings.symbol,
-                signal.action.value,
-                signal.score,
-                current_price,
-                signal.reason,
-                signal.atr_value,
-            )
-
-            can_open, deny = self._risk.can_open_position(self._positions)
-            if not can_open:
-                logger.info("Cannot open position: {}", deny)
-                return
-
-            self._open_position(signal, current_price)
-
-        except Exception:
-            logger.exception("Error in tick")
-
-    def _open_position(self, signal: Signal, price: float) -> None:
+        self._maybe_daily_reset()
         assert self._risk is not None
+        if self._risk.state.is_halted:
+            logger.warning("Trading halted: {}", self._risk.state.halt_reason)
+            return
+
+        for symbol in self._symbols:
+            try:
+                self._tick_symbol(symbol)
+            except Exception:
+                logger.exception("Error in tick for {}", symbol)
+
+    def _tick_symbol(self, symbol: str) -> None:
+        assert self._risk is not None
+        df = self._exchange.fetch_ohlcv(symbol=symbol)
+        current_price = float(df["close"].iloc[-1])
+        logger.info(
+            "[TICK] {} price=${:,.2f} | positions={}",
+            symbol, current_price, len(self._positions),
+        )
+
+        self._manage_open_positions(current_price)
+
+        signal = self._strategy.analyze(df)
+        logger.info(
+            "{} Signal: {} score={:.3f}{}",
+            symbol,
+            signal.action.value,
+            signal.score,
+            f" ATR={signal.atr_value:.2f}" if signal.atr_value else "",
+        )
+
+        if signal.action == SignalAction.HOLD:
+            return
+        if signal.score < self._settings.min_signal_score:
+            return
+
+        self._notifier.signal_alert(
+            symbol,
+            signal.action.value,
+            signal.score,
+            current_price,
+            signal.reason,
+            signal.atr_value,
+        )
+
+        can_open, deny = self._risk.can_open_position(self._positions)
+        if not can_open:
+            logger.info("Cannot open position: {}", deny)
+            return
+
+        self._open_position(signal, current_price, symbol)
+
+    def _open_position(
+        self, signal: Signal, price: float, symbol: str | None = None,
+    ) -> None:
+        assert self._risk is not None
+        sym = symbol or self._settings.symbol
         side = Side.LONG if signal.action == SignalAction.BUY else Side.SHORT
 
         atr_sl = self._settings.atr_sl_multiplier
@@ -183,12 +193,12 @@ class TradingBot:
         if qty <= 0:
             return
 
-        order = self._exchange.create_market_order(side, qty)
-        self._exchange.create_stop_order(side, qty, sl)
-        self._exchange.create_take_profit_order(side, qty, tp)
+        order = self._exchange.create_market_order(side, qty, symbol=sym)
+        self._exchange.create_stop_order(side, qty, sl, symbol=sym)
+        self._exchange.create_take_profit_order(side, qty, tp, symbol=sym)
 
         pos = Position(
-            symbol=self._settings.symbol,
+            symbol=sym,
             side=side,
             entry_price=price,
             quantity=qty,
@@ -201,21 +211,10 @@ class TradingBot:
         self._positions.append(pos)
         logger.info(
             "Opened {} {:.6f} {} @ {:.2f} | SL={:.2f} TP={:.2f} | Score={:.2f}",
-            side.value,
-            qty,
-            self._settings.symbol,
-            price,
-            sl,
-            tp,
-            signal.score,
+            side.value, qty, sym, price, sl, tp, signal.score,
         )
         self._notifier.position_opened(
-            self._settings.symbol,
-            side.value,
-            price,
-            qty,
-            sl,
-            tp,
+            sym, side.value, price, qty, sl, tp,
             self._risk.state.current_balance,
         )
 
@@ -237,8 +236,10 @@ class TradingBot:
     def _close_position(self, pos: Position, exit_price: float, reason: str) -> None:
         assert self._risk is not None
         close_side = Side.SHORT if pos.side == Side.LONG else Side.LONG
-        self._exchange.create_market_order(close_side, pos.quantity, reduce_only=True)
-        self._exchange.cancel_all_orders()
+        self._exchange.create_market_order(
+            close_side, pos.quantity, symbol=pos.symbol, reduce_only=True,
+        )
+        self._exchange.cancel_all_orders(symbol=pos.symbol)
 
         if pos.side == Side.LONG:
             pnl = (exit_price - pos.entry_price) * pos.quantity
