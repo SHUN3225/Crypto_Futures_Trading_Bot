@@ -61,7 +61,8 @@ class TradingBot:
             self._settings.mode.value,
         )
         self._init_risk_manager()
-        self._exchange.set_leverage()
+        if self._settings.mode != TradingMode.PAPER:
+            self._exchange.set_leverage()
         self._running = True
 
         logger.info(
@@ -110,15 +111,19 @@ class TradingBot:
 
             df = self._exchange.fetch_ohlcv()
             current_price = float(df["close"].iloc[-1])
+            logger.info(
+                "[TICK] {} price=${:,.2f} | positions={}",
+                self._settings.symbol, current_price, len(self._positions),
+            )
 
             self._manage_open_positions(current_price)
 
             signal = self._strategy.analyze(df)
-            logger.debug(
-                "Signal: {} score={:.3f} reason={}",
+            logger.info(
+                "Signal: {} score={:.3f}{}",
                 signal.action.value,
                 signal.score,
-                signal.reason,
+                f" ATR={signal.atr_value:.2f}" if signal.atr_value else "",
             )
 
             if signal.action == SignalAction.HOLD:
