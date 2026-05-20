@@ -18,6 +18,7 @@ class TradingMode(str, Enum):
 class ExchangeId(str, Enum):
     BINANCE = "binance"
     BYBIT = "bybit"
+    OKX = "okx"
 
 
 class Settings(BaseSettings):
@@ -39,9 +40,9 @@ class Settings(BaseSettings):
     max_position_pct: float = Field(
         default=0.02, ge=0.001, le=0.1, description="Max % of balance per trade"
     )
-    stop_loss_pct: float = Field(default=0.015, ge=0.005, le=0.1)
-    take_profit_pct: float = Field(default=0.03, ge=0.01, le=0.2)
-    trailing_stop_pct: float = Field(default=0.01, ge=0.003, le=0.05)
+    stop_loss_pct: float = Field(default=0.01, ge=0.005, le=0.1)
+    take_profit_pct: float = Field(default=0.015, ge=0.005, le=0.2)
+    trailing_stop_pct: float = Field(default=0.008, ge=0.003, le=0.05)
     max_daily_loss_pct: float = Field(
         default=0.05, ge=0.01, le=0.2, description="Max daily drawdown before stopping"
     )
@@ -53,7 +54,7 @@ class Settings(BaseSettings):
     # --- Strategy ---
     strategy_name: str = "multi_signal"
     min_signal_score: float = Field(
-        default=0.6, ge=0.0, le=1.0, description="Minimum combined signal score to enter"
+        default=0.4, ge=0.0, le=1.0, description="Minimum combined signal score to enter"
     )
 
     # --- Polling ---

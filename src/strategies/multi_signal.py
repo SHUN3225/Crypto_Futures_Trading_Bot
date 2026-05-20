@@ -24,22 +24,27 @@ class MultiSignalStrategy(BaseStrategy):
     Combines multiple technical indicators with weighted scoring.
 
     Signal components and weights:
-      - RSI (oversold/overbought zones):      0.20
+      - RSI (oversold/overbought zones):      0.15
       - EMA crossover (fast/slow):             0.20
-      - MACD histogram + divergence:           0.25
-      - Bollinger Band position + squeeze:     0.20
+      - MACD histogram + divergence:           0.20
+      - Bollinger Band position + squeeze:     0.15
       - Volume confirmation:                   0.10
       - ADX trend strength filter:             0.05
+      - Trend filter (EMA200):                 0.15
 
-    Only produces a signal when the weighted score exceeds the threshold.
+    Only produces a signal when the weighted score exceeds the threshold
+    AND at least 3 indicators agree on direction.
     """
 
-    WEIGHT_RSI = 0.20
+    WEIGHT_RSI = 0.15
     WEIGHT_EMA = 0.20
-    WEIGHT_MACD = 0.25
-    WEIGHT_BB = 0.20
+    WEIGHT_MACD = 0.20
+    WEIGHT_BB = 0.15
     WEIGHT_VOLUME = 0.10
     WEIGHT_ADX = 0.05
+    WEIGHT_TREND = 0.15
+
+    MIN_AGREEING_INDICATORS = 3
 
     def __init__(
         self,
@@ -47,6 +52,7 @@ class MultiSignalStrategy(BaseStrategy):
         ema_fast: int = 9,
         ema_slow: int = 21,
         ema_trend: int = 50,
+        ema_macro: int = 200,
         bb_length: int = 20,
         bb_std: float = 2.0,
         adx_length: int = 14,
@@ -56,6 +62,7 @@ class MultiSignalStrategy(BaseStrategy):
         self._ema_fast = ema_fast
         self._ema_slow = ema_slow
         self._ema_trend = ema_trend
+        self._ema_macro = ema_macro
         self._bb_length = bb_length
         self._bb_std = bb_std
         self._adx_length = adx_length
@@ -66,7 +73,8 @@ class MultiSignalStrategy(BaseStrategy):
         return "multi_signal"
 
     def analyze(self, df: pd.DataFrame) -> Signal:
-        if len(df) < self._ema_trend + 10:
+        min_bars = max(self._ema_macro, self._ema_trend) + 10
+        if len(df) < min_bars:
             return Signal(action=SignalAction.HOLD, score=0.0, reason="Insufficient data")
 
         rsi_score, rsi_direction = self._score_rsi(df)
@@ -75,12 +83,24 @@ class MultiSignalStrategy(BaseStrategy):
         bb_score, bb_direction = self._score_bollinger(df)
         vol_score = self._score_volume(df)
         adx_score, trending = self._score_adx(df)
+        trend_score, trend_direction = self._score_trend(df)
+
+        # Count how many directional indicators agree
+        buy_votes = sum(
+            1 for d in [rsi_direction, ema_direction, macd_direction, bb_direction, trend_direction]
+            if d == "buy"
+        )
+        sell_votes = sum(
+            1 for d in [rsi_direction, ema_direction, macd_direction, bb_direction, trend_direction]
+            if d == "sell"
+        )
 
         buy_score = (
             self.WEIGHT_RSI * (rsi_score if rsi_direction == "buy" else 0)
             + self.WEIGHT_EMA * (ema_score if ema_direction == "buy" else 0)
             + self.WEIGHT_MACD * (macd_score if macd_direction == "buy" else 0)
             + self.WEIGHT_BB * (bb_score if bb_direction == "buy" else 0)
+            + self.WEIGHT_TREND * (trend_score if trend_direction == "buy" else 0)
             + self.WEIGHT_VOLUME * vol_score
             + self.WEIGHT_ADX * adx_score
         )
@@ -90,6 +110,7 @@ class MultiSignalStrategy(BaseStrategy):
             + self.WEIGHT_EMA * (ema_score if ema_direction == "sell" else 0)
             + self.WEIGHT_MACD * (macd_score if macd_direction == "sell" else 0)
             + self.WEIGHT_BB * (bb_score if bb_direction == "sell" else 0)
+            + self.WEIGHT_TREND * (trend_score if trend_direction == "sell" else 0)
             + self.WEIGHT_VOLUME * vol_score
             + self.WEIGHT_ADX * adx_score
         )
@@ -107,16 +128,19 @@ class MultiSignalStrategy(BaseStrategy):
             reasons.append(f"MACD({macd_direction}:{macd_score:.2f})")
         if bb_direction != "neutral":
             reasons.append(f"BB({bb_direction}:{bb_score:.2f})")
+        if trend_direction != "neutral":
+            reasons.append(f"TREND({trend_direction}:{trend_score:.2f})")
         reasons.append(f"VOL({vol_score:.2f})")
         reasons.append(f"ADX({'trending' if trending else 'ranging'}:{adx_score:.2f})")
 
         reason_str = " | ".join(reasons)
 
-        if buy_score > sell_score and buy_score > 0.3:
-            logger.debug("BUY signal: score={:.3f} — {}", buy_score, reason_str)
+        # Require minimum indicator agreement for entry
+        if buy_score > sell_score and buy_score > 0.3 and buy_votes >= self.MIN_AGREEING_INDICATORS:
+            logger.debug("BUY signal: score={:.3f} votes={} — {}", buy_score, buy_votes, reason_str)
             return Signal(action=SignalAction.BUY, score=buy_score, reason=reason_str)
-        elif sell_score > buy_score and sell_score > 0.3:
-            logger.debug("SELL signal: score={:.3f} — {}", sell_score, reason_str)
+        elif sell_score > buy_score and sell_score > 0.3 and sell_votes >= self.MIN_AGREEING_INDICATORS:
+            logger.debug("SELL signal: score={:.3f} votes={} — {}", sell_score, sell_votes, reason_str)
             return Signal(action=SignalAction.SELL, score=sell_score, reason=reason_str)
 
         return Signal(action=SignalAction.HOLD, score=max(buy_score, sell_score), reason=reason_str)
@@ -339,3 +363,25 @@ class MultiSignalStrategy(BaseStrategy):
             score = 0.2
 
         return score, trending
+
+    def _score_trend(self, df: pd.DataFrame) -> tuple[float, str]:
+        """EMA200 macro trend filter — only trade with the bigger trend."""
+        ema_macro = compute_ema(df, self._ema_macro)
+        if ema_macro.empty or ema_macro.isna().all():
+            return 0.0, "neutral"
+
+        price = df["close"].iloc[-1]
+        macro_val = ema_macro.iloc[-1]
+        if pd.isna(macro_val):
+            return 0.0, "neutral"
+
+        distance_pct = (price - macro_val) / macro_val
+
+        if distance_pct > 0:
+            score = min(abs(distance_pct) * 20, 1.0)
+            return score, "buy"
+        elif distance_pct < 0:
+            score = min(abs(distance_pct) * 20, 1.0)
+            return score, "sell"
+
+        return 0.0, "neutral"
