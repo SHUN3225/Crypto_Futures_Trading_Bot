@@ -32,8 +32,10 @@ class MultiSignalStrategy(BaseStrategy):
       - ADX trend strength filter:             0.05
       - Trend filter (EMA200):                 0.15
 
-    Only produces a signal when the weighted score exceeds the threshold
-    AND at least 3 indicators agree on direction.
+    Features:
+      - Minimum indicator agreement (3+) for entry
+      - Regime filter: penalise counter-trend trades
+      - ATR attached to signals for dynamic SL/TP
     """
 
     WEIGHT_RSI = 0.15
@@ -57,6 +59,7 @@ class MultiSignalStrategy(BaseStrategy):
         bb_std: float = 2.0,
         adx_length: int = 14,
         adx_threshold: float = 20.0,
+        regime_filter: bool = True,
     ) -> None:
         self._rsi_length = rsi_length
         self._ema_fast = ema_fast
@@ -67,6 +70,7 @@ class MultiSignalStrategy(BaseStrategy):
         self._bb_std = bb_std
         self._adx_length = adx_length
         self._adx_threshold = adx_threshold
+        self._regime_filter = regime_filter
 
     @property
     def name(self) -> str:
@@ -119,6 +123,13 @@ class MultiSignalStrategy(BaseStrategy):
             buy_score *= 0.6
             sell_score *= 0.6
 
+        # Regime filter: penalise counter-trend trades
+        if self._regime_filter and trend_direction != "neutral":
+            if trend_direction == "buy":
+                sell_score *= 0.3
+            else:
+                buy_score *= 0.3
+
         reasons: list[str] = []
         if rsi_direction != "neutral":
             reasons.append(f"RSI({rsi_direction}:{rsi_score:.2f})")
@@ -135,13 +146,17 @@ class MultiSignalStrategy(BaseStrategy):
 
         reason_str = " | ".join(reasons)
 
+        # Compute ATR for dynamic SL/TP
+        atr = compute_atr(df)
+        atr_val = float(atr.iloc[-1]) if not atr.empty and not atr.isna().all() else None
+
         # Require minimum indicator agreement for entry
         if buy_score > sell_score and buy_score > 0.3 and buy_votes >= self.MIN_AGREEING_INDICATORS:
             logger.debug("BUY signal: score={:.3f} votes={} — {}", buy_score, buy_votes, reason_str)
-            return Signal(action=SignalAction.BUY, score=buy_score, reason=reason_str)
+            return Signal(action=SignalAction.BUY, score=buy_score, reason=reason_str, atr_value=atr_val)
         elif sell_score > buy_score and sell_score > 0.3 and sell_votes >= self.MIN_AGREEING_INDICATORS:
             logger.debug("SELL signal: score={:.3f} votes={} — {}", sell_score, sell_votes, reason_str)
-            return Signal(action=SignalAction.SELL, score=sell_score, reason=reason_str)
+            return Signal(action=SignalAction.SELL, score=sell_score, reason=reason_str, atr_value=atr_val)
 
         return Signal(action=SignalAction.HOLD, score=max(buy_score, sell_score), reason=reason_str)
 

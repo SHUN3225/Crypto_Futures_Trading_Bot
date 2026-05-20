@@ -24,6 +24,7 @@ class Signal:
     score: float  # 0.0 – 1.0 confidence
     reason: str = ""
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    atr_value: float | None = None  # current ATR for dynamic SL/TP
 
 
 @dataclass

@@ -42,8 +42,16 @@ def run_backtest(
     df = exchange.fetch_ohlcv(symbol, timeframe, limit=1000)
     logger.info("Loaded {} candles from {} to {}", len(df), df.index[0], df.index[-1])
 
-    strat = MultiSignalStrategy() if strategy == "multi_signal" else ScalpingStrategy()
-    bt = Backtester(strat, settings, initial_balance)
+    strat = (
+        MultiSignalStrategy(regime_filter=settings.regime_filter)
+        if strategy == "multi_signal"
+        else ScalpingStrategy()
+    )
+    bt = Backtester(
+        strat, settings, initial_balance,
+        atr_sl_mult=settings.atr_sl_multiplier,
+        atr_tp_mult=settings.atr_tp_multiplier,
+    )
     metrics = bt.run(df)
 
     print(metrics.summary())

@@ -75,10 +75,14 @@ class Backtester:
         strategy: BaseStrategy,
         settings: Settings,
         initial_balance: float = 10_000.0,
+        atr_sl_mult: float | None = None,
+        atr_tp_mult: float | None = None,
     ) -> None:
         self._strategy = strategy
         self._settings = settings
         self._initial_balance = initial_balance
+        self._atr_sl_mult = atr_sl_mult
+        self._atr_tp_mult = atr_tp_mult
 
     def run(self, df: pd.DataFrame, min_signal_score: float | None = None) -> BacktestMetrics:
         threshold = min_signal_score if min_signal_score is not None else self._settings.min_signal_score
@@ -123,7 +127,7 @@ class Backtester:
                 if not can_open:
                     continue
                 if signal.score >= threshold:
-                    position = self._open_position(signal, current_price, risk, bar_time)
+                    position = self._open_position(signal, current_price, risk, bar_time, signal.atr_value)
 
         if position is not None:
             final_price = float(df.iloc[-1]["close"])
@@ -167,11 +171,27 @@ class Backtester:
         price: float,
         risk: RiskManager,
         bar_time: datetime,
+        atr_value: float | None = None,
     ) -> Position:
         side = Side.LONG if signal.action == SignalAction.BUY else Side.SHORT
-        qty = risk.calculate_position_size(price, side)
-        sl = risk.compute_stop_loss(price, side)
-        tp = risk.compute_take_profit(price, side)
+
+        # Dynamic ATR-based SL/TP when multipliers are configured
+        if self._atr_sl_mult and self._atr_tp_mult and atr_value and atr_value > 0:
+            sl_dist = atr_value * self._atr_sl_mult
+            tp_dist = atr_value * self._atr_tp_mult
+            if side == Side.LONG:
+                sl = round(price - sl_dist, 2)
+                tp = round(price + tp_dist, 2)
+            else:
+                sl = round(price + sl_dist, 2)
+                tp = round(price - tp_dist, 2)
+            risk_amount = risk.state.current_balance * self._settings.max_position_pct
+            qty = round(risk_amount / sl_dist, 6) if sl_dist > 0 else 0.0
+        else:
+            qty = risk.calculate_position_size(price, side)
+            sl = risk.compute_stop_loss(price, side)
+            tp = risk.compute_take_profit(price, side)
+
         return Position(
             symbol=self._settings.symbol,
             side=side,

@@ -17,9 +17,10 @@ from src.strategies.multi_signal import MultiSignalStrategy
 from src.strategies.scalping import ScalpingStrategy
 
 
-def _build_strategy(name: str) -> BaseStrategy:
+def _build_strategy(settings: Settings) -> BaseStrategy:
+    name = settings.strategy_name
     strategies: dict[str, BaseStrategy] = {
-        "multi_signal": MultiSignalStrategy(),
+        "multi_signal": MultiSignalStrategy(regime_filter=settings.regime_filter),
         "scalping": ScalpingStrategy(),
     }
     if name not in strategies:
@@ -34,7 +35,7 @@ class TradingBot:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
         self._exchange = ExchangeClient(settings)
-        self._strategy = _build_strategy(settings.strategy_name)
+        self._strategy = _build_strategy(settings)
         self._risk: RiskManager | None = None
         self._positions: list[Position] = []
         self._running = False
@@ -138,12 +139,26 @@ class TradingBot:
     def _open_position(self, signal: Signal, price: float) -> None:
         assert self._risk is not None
         side = Side.LONG if signal.action == SignalAction.BUY else Side.SHORT
-        qty = self._risk.calculate_position_size(price, side)
+
+        atr_sl = self._settings.atr_sl_multiplier
+        atr_tp = self._settings.atr_tp_multiplier
+        if atr_sl and atr_tp and signal.atr_value and signal.atr_value > 0:
+            sl_dist = signal.atr_value * atr_sl
+            tp_dist = signal.atr_value * atr_tp
+            if side == Side.LONG:
+                sl = round(price - sl_dist, 2)
+                tp = round(price + tp_dist, 2)
+            else:
+                sl = round(price + sl_dist, 2)
+                tp = round(price - tp_dist, 2)
+            risk_amount = self._risk.state.current_balance * self._settings.max_position_pct
+            qty = round(risk_amount / sl_dist, 6) if sl_dist > 0 else 0.0
+        else:
+            qty = self._risk.calculate_position_size(price, side)
+            sl = self._risk.compute_stop_loss(price, side)
+            tp = self._risk.compute_take_profit(price, side)
         if qty <= 0:
             return
-
-        sl = self._risk.compute_stop_loss(price, side)
-        tp = self._risk.compute_take_profit(price, side)
 
         order = self._exchange.create_market_order(side, qty)
         self._exchange.create_stop_order(side, qty, sl)
