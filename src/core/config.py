@@ -69,6 +69,9 @@ class Settings(BaseSettings):
     # --- Polling ---
     poll_interval_seconds: int = Field(default=30, ge=5, le=300)
 
+    # --- Discord ---
+    discord_webhook: str = Field(default="", description="Discord webhook URL for trade alerts")
+
     # --- Logging ---
     log_level: str = "INFO"
     log_file: Path = Path("logs/bot.log")
