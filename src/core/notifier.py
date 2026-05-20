@@ -42,10 +42,10 @@ class DiscordNotifier:
         atr: float | None = None,
     ) -> None:
         color = 0x00FF00 if action == "buy" else 0xFF0000
-        emoji = "🟢 LONG" if action == "buy" else "🔴 SHORT"
+        direction = "LONG" if action == "buy" else "SHORT"
         fields = [
             {"name": "심볼", "value": symbol, "inline": True},
-            {"name": "방향", "value": emoji, "inline": True},
+            {"name": "방향", "value": direction, "inline": True},
             {"name": "현재가", "value": f"${price:,.2f}", "inline": True},
             {"name": "시그널 점수", "value": f"{score:.3f}", "inline": True},
         ]
@@ -55,7 +55,7 @@ class DiscordNotifier:
 
         self._send_async({
             "embeds": [{
-                "title": f"📊 시그널 감지 — {emoji}",
+                "title": f"[Signal] {direction} — {symbol}",
                 "color": color,
                 "fields": fields,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -72,14 +72,14 @@ class DiscordNotifier:
         tp: float,
         balance: float,
     ) -> None:
-        emoji = "🟢 LONG" if side == "long" else "🔴 SHORT"
+        side_str = "LONG" if side == "long" else "SHORT"
         color = 0x2ECC71 if side == "long" else 0xE74C3C
         sl_pct = abs(sl - price) / price * 100
         tp_pct = abs(tp - price) / price * 100
 
         self._send_async({
             "embeds": [{
-                "title": f"📈 포지션 진입 — {emoji}",
+                "title": f"[Entry] {side_str} — {symbol}",
                 "color": color,
                 "fields": [
                     {"name": "심볼", "value": symbol, "inline": True},
@@ -105,13 +105,13 @@ class DiscordNotifier:
         balance: float,
     ) -> None:
         win = pnl > 0
-        emoji = "💰 수익" if win else "💸 손실"
+        result = "WIN" if win else "LOSS"
         color = 0x27AE60 if win else 0xC0392B
         side_str = "LONG" if side == "long" else "SHORT"
 
         self._send_async({
             "embeds": [{
-                "title": f"{emoji} 포지션 청산 — {side_str}",
+                "title": f"[Exit] {side_str} {result} — {symbol}",
                 "color": color,
                 "fields": [
                     {"name": "심볼", "value": symbol, "inline": True},
@@ -128,7 +128,7 @@ class DiscordNotifier:
     def halted(self, reason: str, balance: float) -> None:
         self._send_async({
             "embeds": [{
-                "title": "🚨 거래 중지",
+                "title": "[HALT] Trading Stopped",
                 "color": 0xFF0000,
                 "description": f"**사유:** {reason}\n**잔고:** ${balance:,.2f}",
                 "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -138,7 +138,7 @@ class DiscordNotifier:
     def bot_started(self, symbol: str, mode: str, balance: float) -> None:
         self._send_async({
             "embeds": [{
-                "title": "🤖 봇 시작",
+                "title": "[Bot] Started",
                 "color": 0x3498DB,
                 "fields": [
                     {"name": "심볼", "value": symbol, "inline": True},
@@ -152,7 +152,7 @@ class DiscordNotifier:
     def bot_stopped(self, balance: float, total_pnl: float) -> None:
         self._send_async({
             "embeds": [{
-                "title": "⏹️ 봇 종료",
+                "title": "[Bot] Stopped",
                 "color": 0x95A5A6,
                 "fields": [
                     {"name": "최종 잔고", "value": f"${balance:,.2f}", "inline": True},
