@@ -22,20 +22,20 @@ class ExchangeClient:
     def _create_exchange(self) -> ccxt.Exchange:
         exchange_cls = getattr(ccxt, self._settings.exchange_id.value)
         params: dict[str, Any] = {
-            "apiKey": self._settings.api_key,
-            "secret": self._settings.api_secret,
             "options": {"defaultType": "swap"},
             "enableRateLimit": True,
         }
-        if self._settings.testnet:
-            params["sandbox"] = True
-
-        exchange: ccxt.Exchange = exchange_cls(params)
 
         if self._settings.mode == TradingMode.PAPER:
-            exchange.set_sandbox_mode(True)
+            # Paper mode: use public API only (no auth needed)
+            logger.info("[PAPER] Using public API — no credentials required")
+        else:
+            params["apiKey"] = self._settings.api_key
+            params["secret"] = self._settings.api_secret
+            if self._settings.testnet:
+                params["sandbox"] = True
 
-        return exchange
+        return exchange_cls(params)
 
     @property
     def exchange(self) -> ccxt.Exchange:
