@@ -11,6 +11,7 @@ from loguru import logger
 from src.core.config import Settings, TradingMode
 from src.core.exchange import ExchangeClient
 from src.core.models import Position, Side, Signal, SignalAction, TradeResult
+from src.core.notifier import DiscordNotifier
 from src.core.risk_manager import RiskManager
 from src.strategies.base import BaseStrategy
 from src.strategies.multi_signal import MultiSignalStrategy
@@ -40,6 +41,7 @@ class TradingBot:
         self._positions: list[Position] = []
         self._running = False
         self._last_daily_reset: str = ""
+        self._notifier = DiscordNotifier(settings.discord_webhook)
 
     def _init_risk_manager(self) -> None:
         if self._settings.mode == TradingMode.PAPER:
@@ -61,7 +63,8 @@ class TradingBot:
             self._settings.mode.value,
         )
         self._init_risk_manager()
-        self._exchange.set_leverage()
+        if self._settings.mode != TradingMode.PAPER:
+            self._exchange.set_leverage()
         self._running = True
 
         logger.info(
@@ -72,6 +75,13 @@ class TradingBot:
             self._settings.max_drawdown_pct,
             self._risk.get_risk_reward_ratio() if self._risk else 0,
         )
+
+        if self._risk:
+            self._notifier.bot_started(
+                self._settings.symbol,
+                self._settings.mode.value,
+                self._risk.state.current_balance,
+            )
 
         try:
             while self._running:
@@ -110,21 +120,34 @@ class TradingBot:
 
             df = self._exchange.fetch_ohlcv()
             current_price = float(df["close"].iloc[-1])
+            logger.info(
+                "[TICK] {} price=${:,.2f} | positions={}",
+                self._settings.symbol, current_price, len(self._positions),
+            )
 
             self._manage_open_positions(current_price)
 
             signal = self._strategy.analyze(df)
-            logger.debug(
-                "Signal: {} score={:.3f} reason={}",
+            logger.info(
+                "Signal: {} score={:.3f}{}",
                 signal.action.value,
                 signal.score,
-                signal.reason,
+                f" ATR={signal.atr_value:.2f}" if signal.atr_value else "",
             )
 
             if signal.action == SignalAction.HOLD:
                 return
             if signal.score < self._settings.min_signal_score:
                 return
+
+            self._notifier.signal_alert(
+                self._settings.symbol,
+                signal.action.value,
+                signal.score,
+                current_price,
+                signal.reason,
+                signal.atr_value,
+            )
 
             can_open, deny = self._risk.can_open_position(self._positions)
             if not can_open:
@@ -186,6 +209,15 @@ class TradingBot:
             tp,
             signal.score,
         )
+        self._notifier.position_opened(
+            self._settings.symbol,
+            side.value,
+            price,
+            qty,
+            sl,
+            tp,
+            self._risk.state.current_balance,
+        )
 
     def _manage_open_positions(self, current_price: float) -> None:
         assert self._risk is not None
@@ -227,6 +259,16 @@ class TradingBot:
             reason=reason,
         )
         self._risk.record_trade(result)
+        self._notifier.position_closed(
+            pos.symbol,
+            pos.side.value,
+            pos.entry_price,
+            exit_price,
+            pnl,
+            pnl_pct * 100,
+            reason,
+            self._risk.state.current_balance,
+        )
 
     def _maybe_daily_reset(self) -> None:
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -248,3 +290,4 @@ class TradingBot:
                 state.current_balance,
                 state.current_drawdown,
             )
+            self._notifier.bot_stopped(state.current_balance, state.total_pnl)
