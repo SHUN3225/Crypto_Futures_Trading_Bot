@@ -27,11 +27,12 @@ class ExchangeClient:
         }
 
         if self._settings.mode == TradingMode.PAPER:
-            # Paper mode: use public API only (no auth needed)
             logger.info("[PAPER] Using public API — no credentials required")
         else:
             params["apiKey"] = self._settings.api_key
             params["secret"] = self._settings.api_secret
+            if self._settings.api_passphrase:
+                params["password"] = self._settings.api_passphrase
             if self._settings.testnet:
                 params["sandbox"] = True
 
@@ -105,12 +106,14 @@ class ExchangeClient:
         if self._settings.mode == TradingMode.PAPER:
             return self._simulate_order(sym, order_side, quantity, stop_price)
 
+        stop_params: dict[str, Any] = {"reduceOnly": True}
+        if self._settings.exchange_id == ExchangeId.BYBIT:
+            stop_params["triggerPrice"] = stop_price
+        else:
+            stop_params["stopPrice"] = stop_price
+
         order = self._exchange.create_order(
-            sym,
-            "stop_market",
-            order_side,
-            quantity,
-            params={"stopPrice": stop_price, "reduceOnly": True},
+            sym, "stop_market", order_side, quantity, params=stop_params,
         )
         logger.info("Stop order placed: {} {} @ {}", order_side, quantity, stop_price)
         return order  # type: ignore[no-any-return]
@@ -128,12 +131,14 @@ class ExchangeClient:
         if self._settings.mode == TradingMode.PAPER:
             return self._simulate_order(sym, order_side, quantity, tp_price)
 
+        tp_params: dict[str, Any] = {"reduceOnly": True}
+        if self._settings.exchange_id == ExchangeId.BYBIT:
+            tp_params["triggerPrice"] = tp_price
+        else:
+            tp_params["stopPrice"] = tp_price
+
         order = self._exchange.create_order(
-            sym,
-            "take_profit_market",
-            order_side,
-            quantity,
-            params={"stopPrice": tp_price, "reduceOnly": True},
+            sym, "take_profit_market", order_side, quantity, params=tp_params,
         )
         logger.info("Take-profit order placed: {} {} @ {}", order_side, quantity, tp_price)
         return order  # type: ignore[no-any-return]
