@@ -25,10 +25,11 @@ class Settings(BaseSettings):
     """Global bot settings loaded from environment / .env file."""
 
     # --- Exchange ---
-    exchange_id: ExchangeId = ExchangeId.BINANCE
+    exchange_id: ExchangeId = ExchangeId.BYBIT
     api_key: str = ""
     api_secret: str = ""
-    testnet: bool = True
+    api_passphrase: str = Field(default="", description="API passphrase (OKX only)")
+    testnet: bool = False
 
     # --- Trading ---
     mode: TradingMode = TradingMode.PAPER
