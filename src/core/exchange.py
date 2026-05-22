@@ -43,7 +43,7 @@ class ExchangeClient:
         return self._exchange
 
     def fetch_ohlcv(
-        self, symbol: str | None = None, timeframe: str | None = None, limit: int = 200
+        self, symbol: str | None = None, timeframe: str | None = None, limit: int = 300
     ) -> pd.DataFrame:
         sym = symbol or self._settings.symbol
         tf = timeframe or self._settings.timeframe
