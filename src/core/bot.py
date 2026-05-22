@@ -134,7 +134,7 @@ class TradingBot:
             symbol, current_price, len(self._positions),
         )
 
-        self._manage_open_positions(current_price)
+        self._manage_open_positions(symbol, current_price)
 
         signal = self._strategy.analyze(df)
         logger.info(
@@ -218,11 +218,13 @@ class TradingBot:
             self._risk.state.current_balance,
         )
 
-    def _manage_open_positions(self, current_price: float) -> None:
+    def _manage_open_positions(self, symbol: str, current_price: float) -> None:
         assert self._risk is not None
         closed: list[int] = []
 
         for i, pos in enumerate(self._positions):
+            if pos.symbol != symbol:
+                continue
             pos.update_trailing(current_price, self._settings.trailing_stop_pct)
             should_close, reason = self._risk.should_close_position(pos, current_price)
 
