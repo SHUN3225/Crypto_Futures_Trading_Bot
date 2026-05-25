@@ -164,6 +164,12 @@ class TradingBot:
             logger.info("Cannot open position: {}", deny)
             return
 
+        target_side = Side.LONG if signal.action == SignalAction.BUY else Side.SHORT
+        same_dir = sum(1 for p in self._positions if p.side == target_side)
+        if same_dir >= 2:
+            logger.info("Skipping {}: already {} {} positions (correlation limit)", symbol, same_dir, target_side.value)
+            return
+
         self._open_position(signal, current_price, symbol)
 
     def _open_position(
@@ -185,7 +191,9 @@ class TradingBot:
                 sl = round(price + sl_dist, 2)
                 tp = round(price - tp_dist, 2)
             risk_amount = self._risk.state.current_balance * self._settings.max_position_pct
-            qty = round(risk_amount / sl_dist, 6) if sl_dist > 0 else 0.0
+            fee_cost = price * 0.001  # 0.1% round-trip fee estimate
+            effective_sl_dist = sl_dist - fee_cost
+            qty = round(risk_amount / max(effective_sl_dist, sl_dist * 0.5), 6)
         else:
             qty = self._risk.calculate_position_size(price, side)
             sl = self._risk.compute_stop_loss(price, side)
@@ -207,6 +215,7 @@ class TradingBot:
             order_id=order.get("id", ""),
             highest_price=price,
             lowest_price=price,
+            atr_value=signal.atr_value,
         )
         self._positions.append(pos)
         logger.info(
@@ -225,6 +234,18 @@ class TradingBot:
         for i, pos in enumerate(self._positions):
             if pos.symbol != symbol:
                 continue
+
+            # In live mode, check if exchange already closed the position
+            # (e.g. SL/TP trigger filled by exchange)
+            if self._settings.mode != TradingMode.PAPER:
+                exchange_positions = self._exchange.fetch_positions(symbol=symbol)
+                if not exchange_positions:
+                    logger.info("Exchange position gone for {} — filled by exchange SL/TP", symbol)
+                    self._exchange.cancel_all_orders(symbol=symbol)
+                    self._record_external_close(pos, current_price)
+                    closed.append(i)
+                    continue
+
             pos.update_trailing(current_price, self._settings.trailing_stop_pct)
             should_close, reason = self._risk.should_close_position(pos, current_price)
 
@@ -234,6 +255,29 @@ class TradingBot:
 
         for idx in reversed(closed):
             self._positions.pop(idx)
+
+    def _record_external_close(self, pos: Position, current_price: float) -> None:
+        """Record a position closed externally by exchange SL/TP trigger."""
+        assert self._risk is not None
+        if pos.side == Side.LONG:
+            pnl = (current_price - pos.entry_price) * pos.quantity
+            pnl_pct = (current_price - pos.entry_price) / pos.entry_price
+        else:
+            pnl = (pos.entry_price - current_price) * pos.quantity
+            pnl_pct = (pos.entry_price - current_price) / pos.entry_price
+
+        result = TradeResult(
+            symbol=pos.symbol, side=pos.side, entry_price=pos.entry_price,
+            exit_price=current_price, quantity=pos.quantity,
+            pnl=pnl, pnl_pct=pnl_pct, opened_at=pos.opened_at,
+            reason="exchange_trigger",
+        )
+        self._risk.record_trade(result)
+        self._notifier.position_closed(
+            pos.symbol, pos.side.value, pos.entry_price, current_price,
+            pnl, pnl_pct * 100, "Exchange SL/TP trigger",
+            self._risk.state.current_balance,
+        )
 
     def _close_position(self, pos: Position, exit_price: float, reason: str) -> None:
         assert self._risk is not None

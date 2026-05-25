@@ -84,10 +84,14 @@ class Backtester:
         self._atr_sl_mult = atr_sl_mult
         self._atr_tp_mult = atr_tp_mult
 
+    # Slippage applied on top of fees (entry + exit)
+    SLIPPAGE_PCT = 0.0005  # 0.05% per side
+
     def run(self, df: pd.DataFrame, min_signal_score: float | None = None) -> BacktestMetrics:
         threshold = min_signal_score if min_signal_score is not None else self._settings.min_signal_score
         risk = RiskManager(self._settings, self._initial_balance)
         position: Position | None = None
+        pending_signal: Signal | None = None  # signal waiting for next-bar entry
         metrics = BacktestMetrics(
             initial_balance=self._initial_balance,
             final_balance=self._initial_balance,
@@ -95,13 +99,14 @@ class Backtester:
         )
         pnl_series: list[float] = []
 
-        lookback = 60
+        lookback = 210
+        last_date = ""
         for i in range(lookback, len(df)):
-            window = df.iloc[: i + 1]
             current_bar = df.iloc[i]
             current_price = float(current_bar["close"])
             high = float(current_bar["high"])
             low = float(current_bar["low"])
+            open_price = float(current_bar["open"])
             bar_time = df.index[i]
             if not isinstance(bar_time, datetime):
                 bar_time = datetime.now(timezone.utc)
@@ -109,25 +114,43 @@ class Backtester:
                 if bar_time.tzinfo is None:
                     bar_time = bar_time.replace(tzinfo=timezone.utc)
 
+            # Daily reset (same as live bot)
+            today = bar_time.strftime("%Y-%m-%d")
+            if today != last_date:
+                risk.reset_daily()
+                last_date = today
+
+            # 1) Execute pending entry at this bar's open (no look-ahead)
+            if pending_signal is not None and position is None:
+                can_open, _ = risk.can_open_position([])
+                if can_open:
+                    entry_price = self._apply_slippage(open_price, pending_signal.action)
+                    position = self._open_position(
+                        pending_signal, entry_price, risk, bar_time, pending_signal.atr_value,
+                    )
+                pending_signal = None
+
+            # 2) Manage open position — SL checked before TP (conservative)
             if position is not None:
                 close, reason = self._check_exit(position, high, low)
                 if close:
-                    exit_price = self._get_exit_price(position, high, low, reason)
+                    raw_exit = self._get_exit_price(position, high, low, reason)
+                    exit_action = SignalAction.SELL if position.side == Side.LONG else SignalAction.BUY
+                    exit_price = self._apply_slippage(raw_exit, exit_action)
                     result = self._close_position(position, exit_price, bar_time, reason)
                     risk.record_trade(result)
                     metrics.trades.append(result)
                     pnl_series.append(result.pnl)
                     position = None
                 else:
-                    position.update_trailing(current_price, self._settings.trailing_stop_pct)
+                    position.update_trailing(current_price, self._settings.trailing_stop_pct, atr_trailing_mult=0.5)
 
-            if position is None:
+            # 3) Generate signal for NEXT bar entry (no same-bar entry)
+            if position is None and pending_signal is None:
+                window = df.iloc[: i + 1]
                 signal = self._strategy.analyze(window)
-                can_open, deny_reason = risk.can_open_position([])
-                if not can_open:
-                    continue
-                if signal.score >= threshold:
-                    position = self._open_position(signal, current_price, risk, bar_time, signal.atr_value)
+                if signal.score >= threshold and signal.action != SignalAction.HOLD:
+                    pending_signal = signal
 
         if position is not None:
             final_price = float(df.iloc[-1]["close"])
@@ -141,6 +164,12 @@ class Backtester:
 
         self._compute_metrics(metrics, pnl_series, risk)
         return metrics
+
+    def _apply_slippage(self, price: float, action: SignalAction) -> float:
+        """Worsen the fill price by slippage."""
+        if action == SignalAction.BUY:
+            return price * (1 + self.SLIPPAGE_PCT)
+        return price * (1 - self.SLIPPAGE_PCT)
 
     def _check_exit(
         self, pos: Position, high: float, low: float
@@ -186,7 +215,9 @@ class Backtester:
                 sl = round(price + sl_dist, 2)
                 tp = round(price - tp_dist, 2)
             risk_amount = risk.state.current_balance * self._settings.max_position_pct
-            qty = round(risk_amount / sl_dist, 6) if sl_dist > 0 else 0.0
+            fee_cost = price * 0.001
+            effective_sl_dist = sl_dist - fee_cost
+            qty = round(risk_amount / max(effective_sl_dist, sl_dist * 0.5), 6)
         else:
             qty = risk.calculate_position_size(price, side)
             sl = risk.compute_stop_loss(price, side)
@@ -202,6 +233,7 @@ class Backtester:
             opened_at=bar_time,
             highest_price=price,
             lowest_price=price,
+            atr_value=atr_value,
         )
 
     @staticmethod
