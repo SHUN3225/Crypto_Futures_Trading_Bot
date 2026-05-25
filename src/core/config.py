@@ -78,7 +78,7 @@ class Settings(BaseSettings):
     )
 
     # --- Polling ---
-    poll_interval_seconds: int = Field(default=30, ge=5, le=300)
+    poll_interval_seconds: int = Field(default=300, ge=5, le=3600)
 
     # --- Discord ---
     discord_webhook: str = Field(default="", description="Discord webhook URL for trade alerts")

@@ -41,18 +41,36 @@ class Position:
     unrealized_pnl: float = 0.0
     highest_price: float = 0.0
     lowest_price: float = 0.0
+    atr_value: float | None = None
 
-    def update_trailing(self, current_price: float, trailing_pct: float) -> None:
+    def update_trailing(
+        self,
+        current_price: float,
+        trailing_pct: float,
+        atr_trailing_mult: float = 0.5,
+    ) -> None:
+        trail_dist: float
+        if self.atr_value and self.atr_value > 0:
+            trail_dist = self.atr_value * atr_trailing_mult
+        else:
+            trail_dist = current_price * trailing_pct
+
         if self.side == Side.LONG:
             if current_price > self.highest_price:
                 self.highest_price = current_price
-            new_stop = self.highest_price * (1 - trailing_pct)
+            if self.atr_value and self.atr_value > 0:
+                new_stop = self.highest_price - trail_dist
+            else:
+                new_stop = self.highest_price * (1 - trailing_pct)
             if new_stop > self.stop_loss:
                 self.stop_loss = new_stop
         else:
             if self.lowest_price == 0.0 or current_price < self.lowest_price:
                 self.lowest_price = current_price
-            new_stop = self.lowest_price * (1 + trailing_pct)
+            if self.atr_value and self.atr_value > 0:
+                new_stop = self.lowest_price + trail_dist
+            else:
+                new_stop = self.lowest_price * (1 + trailing_pct)
             if new_stop < self.stop_loss:
                 self.stop_loss = new_stop
 
@@ -123,3 +141,4 @@ class RiskState:
         self.trades_today = 0
         self.wins_today = 0
         self.losses_today = 0
+        self.consecutive_losses = 0
