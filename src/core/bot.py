@@ -164,6 +164,12 @@ class TradingBot:
             logger.info("Cannot open position: {}", deny)
             return
 
+        target_side = Side.LONG if signal.action == SignalAction.BUY else Side.SHORT
+        same_dir = sum(1 for p in self._positions if p.side == target_side)
+        if same_dir >= 2:
+            logger.info("Skipping {}: already {} {} positions (correlation limit)", symbol, same_dir, target_side.value)
+            return
+
         self._open_position(signal, current_price, symbol)
 
     def _open_position(
@@ -185,7 +191,9 @@ class TradingBot:
                 sl = round(price + sl_dist, 2)
                 tp = round(price - tp_dist, 2)
             risk_amount = self._risk.state.current_balance * self._settings.max_position_pct
-            qty = round(risk_amount / sl_dist, 6) if sl_dist > 0 else 0.0
+            fee_cost = price * 0.001  # 0.1% round-trip fee estimate
+            effective_sl_dist = sl_dist - fee_cost
+            qty = round(risk_amount / max(effective_sl_dist, sl_dist * 0.5), 6)
         else:
             qty = self._risk.calculate_position_size(price, side)
             sl = self._risk.compute_stop_loss(price, side)
@@ -207,6 +215,7 @@ class TradingBot:
             order_id=order.get("id", ""),
             highest_price=price,
             lowest_price=price,
+            atr_value=signal.atr_value,
         )
         self._positions.append(pos)
         logger.info(
