@@ -141,3 +141,4 @@ class RiskState:
         self.trades_today = 0
         self.wins_today = 0
         self.losses_today = 0
+        self.consecutive_losses = 0
