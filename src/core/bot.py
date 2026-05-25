@@ -234,6 +234,18 @@ class TradingBot:
         for i, pos in enumerate(self._positions):
             if pos.symbol != symbol:
                 continue
+
+            # In live mode, check if exchange already closed the position
+            # (e.g. SL/TP trigger filled by exchange)
+            if self._settings.mode != TradingMode.PAPER:
+                exchange_positions = self._exchange.fetch_positions(symbol=symbol)
+                if not exchange_positions:
+                    logger.info("Exchange position gone for {} — filled by exchange SL/TP", symbol)
+                    self._exchange.cancel_all_orders(symbol=symbol)
+                    self._record_external_close(pos, current_price)
+                    closed.append(i)
+                    continue
+
             pos.update_trailing(current_price, self._settings.trailing_stop_pct)
             should_close, reason = self._risk.should_close_position(pos, current_price)
 
@@ -243,6 +255,29 @@ class TradingBot:
 
         for idx in reversed(closed):
             self._positions.pop(idx)
+
+    def _record_external_close(self, pos: Position, current_price: float) -> None:
+        """Record a position closed externally by exchange SL/TP trigger."""
+        assert self._risk is not None
+        if pos.side == Side.LONG:
+            pnl = (current_price - pos.entry_price) * pos.quantity
+            pnl_pct = (current_price - pos.entry_price) / pos.entry_price
+        else:
+            pnl = (pos.entry_price - current_price) * pos.quantity
+            pnl_pct = (pos.entry_price - current_price) / pos.entry_price
+
+        result = TradeResult(
+            symbol=pos.symbol, side=pos.side, entry_price=pos.entry_price,
+            exit_price=current_price, quantity=pos.quantity,
+            pnl=pnl, pnl_pct=pnl_pct, opened_at=pos.opened_at,
+            reason="exchange_trigger",
+        )
+        self._risk.record_trade(result)
+        self._notifier.position_closed(
+            pos.symbol, pos.side.value, pos.entry_price, current_price,
+            pnl, pnl_pct * 100, "Exchange SL/TP trigger",
+            self._risk.state.current_balance,
+        )
 
     def _close_position(self, pos: Position, exit_price: float, reason: str) -> None:
         assert self._risk is not None
