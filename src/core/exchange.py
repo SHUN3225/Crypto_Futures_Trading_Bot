@@ -79,6 +79,8 @@ class ExchangeClient:
         quantity: float,
         symbol: str | None = None,
         reduce_only: bool = False,
+        sl_price: float | None = None,
+        tp_price: float | None = None,
     ) -> dict[str, Any]:
         sym = symbol or self._settings.symbol
         order_side = "buy" if side == Side.LONG else "sell"
@@ -89,8 +91,18 @@ class ExchangeClient:
         if self._settings.mode == TradingMode.PAPER:
             return self._simulate_order(sym, order_side, quantity)
 
+        # Bybit V5: attach SL/TP directly to the opening order (no separate orders needed)
+        if not reduce_only and self._settings.exchange_id == ExchangeId.BYBIT:
+            if sl_price:
+                params["stopLoss"] = str(sl_price)
+            if tp_price:
+                params["takeProfit"] = str(tp_price)
+
         order = self._exchange.create_market_order(sym, order_side, quantity, params=params)
-        logger.info("Market {} order placed: {} {} @ market", order_side, quantity, sym)
+        logger.info(
+            "Market {} order placed: {} {} @ market | SL={} TP={}",
+            order_side, quantity, sym, sl_price or "-", tp_price or "-",
+        )
         return order  # type: ignore[no-any-return]
 
     def create_stop_order(
@@ -100,18 +112,23 @@ class ExchangeClient:
         stop_price: float,
         symbol: str | None = None,
     ) -> dict[str, Any]:
+        """Fallback for non-Bybit exchanges. Bybit uses SL in create_market_order."""
         sym = symbol or self._settings.symbol
         order_side = "sell" if side == Side.LONG else "buy"
 
         if self._settings.mode == TradingMode.PAPER:
             return self._simulate_order(sym, order_side, quantity, stop_price)
 
-        stop_params: dict[str, Any] = {"reduceOnly": True}
         if self._settings.exchange_id == ExchangeId.BYBIT:
-            stop_params["triggerPrice"] = stop_price
-        else:
-            stop_params["stopPrice"] = stop_price
+            # Bybit: update SL on existing position via set_trading_stop
+            try:
+                self._exchange.set_trading_stop(sym, params={"stopLoss": str(stop_price)})
+                logger.info("Bybit SL updated: {} @ {}", sym, stop_price)
+            except Exception as e:
+                logger.warning("Could not update Bybit SL: {}", e)
+            return {}
 
+        stop_params: dict[str, Any] = {"reduceOnly": True, "stopPrice": stop_price}
         order = self._exchange.create_order(
             sym, "stop_market", order_side, quantity, params=stop_params,
         )
@@ -125,18 +142,22 @@ class ExchangeClient:
         tp_price: float,
         symbol: str | None = None,
     ) -> dict[str, Any]:
+        """Fallback for non-Bybit exchanges. Bybit uses TP in create_market_order."""
         sym = symbol or self._settings.symbol
         order_side = "sell" if side == Side.LONG else "buy"
 
         if self._settings.mode == TradingMode.PAPER:
             return self._simulate_order(sym, order_side, quantity, tp_price)
 
-        tp_params: dict[str, Any] = {"reduceOnly": True}
         if self._settings.exchange_id == ExchangeId.BYBIT:
-            tp_params["triggerPrice"] = tp_price
-        else:
-            tp_params["stopPrice"] = tp_price
+            try:
+                self._exchange.set_trading_stop(sym, params={"takeProfit": str(tp_price)})
+                logger.info("Bybit TP updated: {} @ {}", sym, tp_price)
+            except Exception as e:
+                logger.warning("Could not update Bybit TP: {}", e)
+            return {}
 
+        tp_params: dict[str, Any] = {"reduceOnly": True, "stopPrice": tp_price}
         order = self._exchange.create_order(
             sym, "take_profit_market", order_side, quantity, params=tp_params,
         )
@@ -155,6 +176,30 @@ class ExchangeClient:
         sym = symbol or self._settings.symbol
         positions = self._exchange.fetch_positions([sym])
         return [p for p in positions if float(p.get("contracts", 0)) > 0]
+
+    def fetch_realized_pnl(self, symbol: str | None = None, since_ms: int | None = None) -> float | None:
+        """Fetch realized PnL for trades after `since_ms` (position open time).
+
+        Returns summed realized PnL in USDT, or None if unavailable.
+        """
+        sym = symbol or self._settings.symbol
+        try:
+            trades = self._exchange.fetch_my_trades(sym, since=since_ms, limit=20)
+            if not trades:
+                return None
+            total_pnl = 0.0
+            found = False
+            for trade in trades:
+                info = trade.get("info", {})
+                # Bybit returns closedPnl in trade info
+                pnl_str = info.get("closedPnl") or info.get("realizedPnl") or info.get("closed_pnl")
+                if pnl_str is not None:
+                    total_pnl += float(pnl_str)
+                    found = True
+            return total_pnl if found else None
+        except Exception as e:
+            logger.warning("Could not fetch realized PnL: {}", e)
+            return None
 
     @staticmethod
     def _simulate_order(

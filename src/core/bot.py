@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 
 from loguru import logger
 
-from src.core.config import Settings, TradingMode
+from src.core.config import ExchangeId, Settings, TradingMode
 from src.core.exchange import ExchangeClient
 from src.core.models import Position, Side, Signal, SignalAction, TradeResult
 from src.core.notifier import DiscordNotifier
@@ -54,6 +54,36 @@ class TradingBot:
 
         self._risk = RiskManager(self._settings, balance)
 
+    def _sync_open_positions(self) -> None:
+        """On startup, load existing exchange positions to avoid duplicate entries."""
+        if self._settings.mode == TradingMode.PAPER:
+            return
+        for sym in self._symbols:
+            try:
+                exchange_positions = self._exchange.fetch_positions(symbol=sym)
+                for ep in exchange_positions:
+                    contracts = float(ep.get("contracts", 0))
+                    if contracts <= 0:
+                        continue
+                    ep_side = Side.LONG if ep.get("side") == "long" else Side.SHORT
+                    entry = float(ep.get("entryPrice") or ep.get("entry_price") or 0)
+                    sl = float(ep.get("stopLossPrice") or 0)
+                    tp = float(ep.get("takeProfitPrice") or 0)
+                    pos = Position(
+                        symbol=sym,
+                        side=ep_side,
+                        entry_price=entry,
+                        quantity=contracts,
+                        stop_loss=sl or entry * (0.985 if ep_side == Side.LONG else 1.015),
+                        take_profit=tp or entry * (1.02 if ep_side == Side.LONG else 0.98),
+                        highest_price=entry,
+                        lowest_price=entry,
+                    )
+                    self._positions.append(pos)
+                    logger.info("Recovered existing position: {} {} {} @ {}", ep_side.value, contracts, sym, entry)
+            except Exception as e:
+                logger.warning("Could not sync positions for {}: {}", sym, e)
+
     def start(self) -> None:
         logger.info(
             "Starting {} bot | Strategy: {} | Symbols: {} | Leverage: {}x | Mode: {}",
@@ -67,6 +97,7 @@ class TradingBot:
         if self._settings.mode != TradingMode.PAPER:
             for sym in self._symbols:
                 self._exchange.set_leverage(symbol=sym)
+        self._sync_open_positions()
         self._running = True
 
         logger.info(
@@ -97,7 +128,10 @@ class TradingBot:
     async def start_async(self) -> None:
         logger.info("Starting bot (async mode)")
         self._init_risk_manager()
-        self._exchange.set_leverage()
+        if self._settings.mode != TradingMode.PAPER:
+            for sym in self._symbols:
+                self._exchange.set_leverage(symbol=sym)
+        self._sync_open_positions()
         self._running = True
 
         try:
@@ -129,9 +163,10 @@ class TradingBot:
         assert self._risk is not None
         df = self._exchange.fetch_ohlcv(symbol=symbol)
         current_price = float(df["close"].iloc[-1])
+        symbol_positions = sum(1 for p in self._positions if p.symbol == symbol)
         logger.info(
             "[TICK] {} price=${:,.2f} | positions={}",
-            symbol, current_price, len(self._positions),
+            symbol, current_price, symbol_positions,
         )
 
         self._manage_open_positions(symbol, current_price)
@@ -194,6 +229,9 @@ class TradingBot:
             fee_cost = price * 0.001  # 0.1% round-trip fee estimate
             effective_sl_dist = sl_dist - fee_cost
             qty = round(risk_amount / max(effective_sl_dist, sl_dist * 0.5), 6)
+            # Cap: notional per position = balance × leverage / max_open_positions
+            max_qty = (self._risk.state.current_balance * self._settings.leverage) / price / self._settings.max_open_positions
+            qty = min(qty, round(max_qty, 6))
         else:
             qty = self._risk.calculate_position_size(price, side)
             sl = self._risk.compute_stop_loss(price, side)
@@ -202,8 +240,6 @@ class TradingBot:
             return
 
         order = self._exchange.create_market_order(side, qty, symbol=sym)
-        self._exchange.create_stop_order(side, qty, sl, symbol=sym)
-        self._exchange.create_take_profit_order(side, qty, tp, symbol=sym)
 
         pos = Position(
             symbol=sym,
@@ -259,22 +295,46 @@ class TradingBot:
     def _record_external_close(self, pos: Position, current_price: float) -> None:
         """Record a position closed externally by exchange SL/TP trigger."""
         assert self._risk is not None
-        if pos.side == Side.LONG:
-            pnl = (current_price - pos.entry_price) * pos.quantity
-            pnl_pct = (current_price - pos.entry_price) / pos.entry_price
+
+        # Try to get realized PnL directly from exchange (includes fees, funding, etc.)
+        since_ms = int(pos.opened_at.timestamp() * 1000)
+        exchange_pnl = self._exchange.fetch_realized_pnl(symbol=pos.symbol, since_ms=since_ms)
+
+        if exchange_pnl is not None:
+            pnl = exchange_pnl
+            exit_price = current_price
+            pnl_pct = pnl / (pos.entry_price * pos.quantity) if pos.quantity > 0 else 0.0
+            logger.info("Using exchange realized PnL: {:.2f}", pnl)
         else:
-            pnl = (pos.entry_price - current_price) * pos.quantity
-            pnl_pct = (pos.entry_price - current_price) / pos.entry_price
+            # Fallback: estimate exit price from SL/TP levels
+            if pos.side == Side.LONG:
+                if current_price <= pos.stop_loss:
+                    exit_price = pos.stop_loss
+                elif current_price >= pos.take_profit:
+                    exit_price = pos.take_profit
+                else:
+                    exit_price = current_price
+                pnl = (exit_price - pos.entry_price) * pos.quantity
+                pnl_pct = (exit_price - pos.entry_price) / pos.entry_price
+            else:
+                if current_price >= pos.stop_loss:
+                    exit_price = pos.stop_loss
+                elif current_price <= pos.take_profit:
+                    exit_price = pos.take_profit
+                else:
+                    exit_price = current_price
+                pnl = (pos.entry_price - exit_price) * pos.quantity
+                pnl_pct = (pos.entry_price - exit_price) / pos.entry_price
 
         result = TradeResult(
             symbol=pos.symbol, side=pos.side, entry_price=pos.entry_price,
-            exit_price=current_price, quantity=pos.quantity,
+            exit_price=exit_price, quantity=pos.quantity,
             pnl=pnl, pnl_pct=pnl_pct, opened_at=pos.opened_at,
             reason="exchange_trigger",
         )
         self._risk.record_trade(result)
         self._notifier.position_closed(
-            pos.symbol, pos.side.value, pos.entry_price, current_price,
+            pos.symbol, pos.side.value, pos.entry_price, exit_price,
             pnl, pnl_pct * 100, "Exchange SL/TP trigger",
             self._risk.state.current_balance,
         )

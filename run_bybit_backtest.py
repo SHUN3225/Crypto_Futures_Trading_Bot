@@ -20,8 +20,14 @@ from src.strategies.multi_signal import MultiSignalStrategy
 
 
 COINS = [
-    "DOGE/USDT:USDT", "ETH/USDT:USDT", "ADA/USDT:USDT",
-    "DOT/USDT:USDT", "AVAX/USDT:USDT", "LINK/USDT:USDT",
+    "BTC/USDT:USDT", "ETH/USDT:USDT", "BNB/USDT:USDT", "SOL/USDT:USDT",
+    "XRP/USDT:USDT", "DOGE/USDT:USDT", "ADA/USDT:USDT", "TRX/USDT:USDT",
+    "AVAX/USDT:USDT", "LINK/USDT:USDT", "DOT/USDT:USDT", "ATOM/USDT:USDT",
+    "MATIC/USDT:USDT", "LTC/USDT:USDT", "UNI/USDT:USDT", "BCH/USDT:USDT",
+    "APT/USDT:USDT", "OP/USDT:USDT", "ARB/USDT:USDT", "SUI/USDT:USDT",
+    "INJ/USDT:USDT", "FTM/USDT:USDT", "NEAR/USDT:USDT", "ICP/USDT:USDT",
+    "FIL/USDT:USDT", "ETC/USDT:USDT", "HBAR/USDT:USDT", "XLM/USDT:USDT",
+    "VET/USDT:USDT", "ALGO/USDT:USDT",
 ]
 
 
@@ -80,10 +86,10 @@ def run_backtest(
     print(f"  {exchange_name} — 6코인 2년 백테스트")
     print(f"  목표 기간: {target_start:%Y-%m-%d} ~ 현재")
     print(f"  MaxDD=10% | ATR SL=1.5x, TP=2.0x, Trail=ATR*0.5")
-    print(f"  Fee=0.1% + Slip=0.05% | Entry=next bar open | score>=0.3")
+    print(f"  Fee=0.1% + Slip=0.05% | Entry=next bar open | score>=0.4")
     print(f"{'='*70}\n")
 
-    settings = Settings(min_signal_score=0.3, regime_filter=True, max_drawdown_pct=0.10)
+    settings = Settings(min_signal_score=0.4, regime_filter=True, max_drawdown_pct=0.10)
     strategy = MultiSignalStrategy(regime_filter=True)
 
     results = []
@@ -106,7 +112,7 @@ def run_backtest(
         mkt_chg = (mkt_end / mkt_start - 1) * 100
 
         bt = Backtester(strategy, settings, atr_sl_mult=1.5, atr_tp_mult=2.0)
-        m = bt.run(df, min_signal_score=0.3)
+        m = bt.run(df, min_signal_score=0.4)
 
         r = {
             "coin": sym.split("/")[0],

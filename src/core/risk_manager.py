@@ -54,7 +54,9 @@ class RiskManager:
 
         # qty sized so that SL hit = risk_amount loss (leverage only affects margin)
         raw_qty = risk_amount / stop_distance
-        return round(raw_qty, 6)
+        # Cap: notional per position = balance × leverage / max_open_positions
+        max_qty = (self.state.current_balance * self._settings.leverage) / entry_price / self._settings.max_open_positions
+        return round(min(raw_qty, max_qty), 6)
 
     def compute_stop_loss(self, entry_price: float, side: Side) -> float:
         if side == Side.LONG:

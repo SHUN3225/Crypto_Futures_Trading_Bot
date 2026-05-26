@@ -71,7 +71,7 @@ class Settings(BaseSettings):
     # --- Strategy ---
     strategy_name: str = "multi_signal"
     min_signal_score: float = Field(
-        default=0.3, ge=0.0, le=1.0, description="Minimum combined signal score to enter"
+        default=0.4, ge=0.0, le=1.0, description="Minimum combined signal score to enter"
     )
     regime_filter: bool = Field(
         default=True, description="Enable regime filter (penalise counter-trend trades)"
