@@ -130,6 +130,7 @@ class MultiSignalStrategy(BaseStrategy):
             else:
                 buy_score *= 0.3
 
+
         reasons: list[str] = []
         if rsi_direction != "neutral":
             reasons.append(f"RSI({rsi_direction}:{rsi_score:.2f})")
