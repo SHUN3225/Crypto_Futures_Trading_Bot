@@ -27,7 +27,8 @@ class DiscordNotifier:
             if resp.status_code not in (200, 204):
                 logger.warning("Discord webhook returned {}", resp.status_code)
         except Exception as e:
-            logger.warning("Discord send failed: {}", e)
+            # Exception text may contain the webhook URL (token); log type only.
+            logger.warning("Discord send failed: {}", type(e).__name__)
 
     def _send_async(self, payload: dict[str, Any]) -> None:
         threading.Thread(target=self._send, args=(payload,), daemon=True).start()
